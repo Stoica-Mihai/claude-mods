@@ -17,13 +17,13 @@ When several rules match one command, the denial gives every reason at once.
 
 ## Turning rules on
 
-In Claude Code, open `/config` and find the guardrails rows. Or set them from the command line:
+In Claude Code, run `/plugin configure guardrails@claude-mods`. Or set them from the command line:
 
 ```sh
-echo '{"blockWaitLoops": true, "blockPrCreation": true}' | claude plugin configure guardrails@claude-mods --values-stdin
+echo '{"blockWaitLoops": "true", "blockPrCreation": "true"}' | claude plugin configure guardrails@claude-mods --values-stdin
 ```
 
-Claude Code stores the values in `~/.claude/settings.json` under `pluginConfigs`. Changing one reloads the mod.
+The command takes every value as a string, `"true"` or `"false"`. Claude Code stores them as booleans in `~/.claude/settings.json` under `pluginConfigs`. Restart Claude Code to apply a change made this way.
 
 These rules read the command text. They are a speed bump for habits, not a security boundary. A script, a glob or a variable that only becomes a path after expansion gets through.
 
