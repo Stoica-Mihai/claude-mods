@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { GuardrailsBlock, GuardrailsTotals } from '../types'
+import type { GuardrailsBlock, GuardrailsRule, GuardrailsTotals } from '../types'
 import { check } from './rules'
 import type { Block } from './rules'
 
@@ -17,9 +17,22 @@ const time = (at: number): string => new Date(at).toTimeString().slice(0, 5)
 
 const oneLine = (text: string): string => text.replace(/\s*\n\s*/g, ' ⏎ ')
 
-export const register: Register = on => {
-  // nproc fallback matches the shell hook's; unknown until session.start resolves it.
+// The userConfig field that switches each rule on; every rule is off unless its field is true.
+const SWITCHES: Record<GuardrailsRule, string> = {
+  keywords: 'blockWaitLoops',
+  patterns: 'blockPrCreation',
+  'source-writes': 'blockShellSourceWrites',
+  builds: 'blockUncontainedBuilds',
+}
+
+export const register: Register = (on, options) => {
+  const enabled = new Set(
+    (Object.keys(SWITCHES) as GuardrailsRule[]).filter(rule => options[SWITCHES[rule]] === true),
+  )
+  // Machine facts the builds rule reports; these fallbacks stand until session.start measures them.
   let cores = 4
+  let isTmpfs = false
+  const context = () => ({ cores, isTmpfs, enabled })
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'blocked', description: 'Show the Bash commands the guardrails blocked' })
@@ -27,6 +40,8 @@ export const register: Register = on => {
     const nproc = await $.process.run(['nproc']).catch(() => null)
     const parsed = Number(nproc?.stdout.trim())
     if (Number.isInteger(parsed) && parsed > 0) cores = parsed
+    const fsType = await $.process.run(['stat', '-f', '-c', '%T', '/tmp']).catch(() => null)
+    isTmpfs = fsType?.stdout.trim() === 'tmpfs'
 
     const stored = await $.store.get('history')
     const storedTotals = await $.store.get('totals')
@@ -40,7 +55,7 @@ export const register: Register = on => {
 
   // Bookkeeping failures are swallowed: a hook that throws is skipped, which would let the command run.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    const blocks = check(e.command, { cores })
+    const blocks = check(e.command, context())
     if (blocks.length === 0) return next(e)
 
     const record = { rules: blocks.map(block => block.rule), command: e.command, reason: denial(blocks) }
@@ -61,7 +76,7 @@ export const register: Register = on => {
     return { deny: record.reason }
   }).catch(($, e, next) => {
     // Fails closed: if the hook itself failed, the rules still decide without the history.
-    const blocks = check(e.command, { cores })
+    const blocks = check(e.command, context())
     return blocks.length === 0 ? next(e) : { deny: denial(blocks) }
   })
 

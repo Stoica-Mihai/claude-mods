@@ -4,14 +4,26 @@ Blocks Bash commands that route around how this setup is meant to work, and keep
 
 ## Rules
 
-| Rule | Blocks | Instead |
-| --- | --- | --- |
-| `keywords` | `until` in command position: the wait-loop | Background the command and wait for the completion notice |
-| `patterns` | `gh pr create`, `glab mr create`, `gh api -X POST …/pulls` | Merge to `main` directly |
-| `source-writes` | Writing a source file through the shell: `sed -i`, redirects, `cp`, `tee`, Python or Node file writes, `curl -o` | Read the file, then use Edit or Write. `/tmp` is exempt |
-| `builds` | `cargo mutants` outside a systemd scope with `TMPDIR` off the tmpfs, `MemoryMax`, `nice` and at most half the cores as jobs | The required form is in the denial message |
+Every rule is off until you switch it on, so installing the mod changes nothing by itself.
+
+| Setting | Rule | Blocks | Instead |
+| --- | --- | --- | --- |
+| `blockWaitLoops` | `keywords` | `until` in command position: the wait-loop | Background the command and wait for the completion notice |
+| `blockPrCreation` | `patterns` | `gh pr create`, `glab mr create`, `gh api -X POST …/pulls` | Merge to the main branch directly |
+| `blockShellSourceWrites` | `source-writes` | Writing a source file through the shell: `sed -i`, redirects, `cp`, `tee`, Python or Node file writes, `curl -o` | Read the file, then use Edit or Write. `/tmp` is exempt |
+| `blockUncontainedBuilds` | `builds` | `cargo mutants` outside a systemd scope with `MemoryMax`, under `nice`, at no more than half the cores, and with `TMPDIR` off `/tmp` where `/tmp` is a tmpfs | The required form is in the denial message |
 
 When several rules match one command, the denial gives every reason at once.
+
+## Turning rules on
+
+In Claude Code, open `/config` and find the guardrails rows. Or set them from the command line:
+
+```sh
+echo '{"blockWaitLoops": true, "blockPrCreation": true}' | claude plugin configure guardrails@claude-mods --values-stdin
+```
+
+Claude Code stores the values in `~/.claude/settings.json` under `pluginConfigs`. Changing one reloads the mod.
 
 These rules read the command text. They are a speed bump for habits, not a security boundary. A script, a glob or a variable that only becomes a path after expansion gets through.
 
@@ -27,4 +39,4 @@ A deny never depends on the history being written. If recording a block fails, t
 
 ## Tests
 
-`tests/cases.ts` holds 97 commands with the verdicts the original shell hooks gave, reason text included. `tests/rules.test.ts` checks each rule against all of them.
+`tests/cases.ts` holds 97 commands with the verdicts the shell hooks this mod replaced gave on them. `tests/rules.test.ts` checks that each rule decides every one of them the same way: whether it fires, which file path a write names, and why a build is refused.

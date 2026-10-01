@@ -5,7 +5,7 @@ import type { GuardrailsRule as RuleName } from '../types'
 
 export type Block = { rule: RuleName; reason: string }
 
-export type Context = { cores: number }
+export type Context = { cores: number; isTmpfs: boolean; enabled: ReadonlySet<RuleName> }
 
 const lines = (text: string): string[] => text.split('\n')
 
@@ -20,7 +20,7 @@ const perLine = (text: string, edit: (line: string) => string): string => lines(
 
 const KEYWORD_HINTS: Record<string, string> = {
   until:
-    "Wait-loops are denied on this machine, and the harness's own denial message suggests this exact form — that advice is wrong here. To wait for work you started: pass run_in_background and end your turn; you are re-invoked when it completes. To wait on external state the harness cannot observe (CI, a deploy, a remote queue): make one Bash call with a delay matched to how fast that state changes.",
+    'Wait-loops are blocked here. To wait for work you started: pass run_in_background and end your turn; you are re-invoked when it completes. To wait on external state Claude Code cannot observe (CI, a deploy, a remote queue): make one Bash call with a delay matched to how fast that state changes.',
 }
 
 export function keywords(command: string): string | null {
@@ -36,8 +36,7 @@ export function keywords(command: string): string | null {
 
 const BLOCKED_PATTERNS = [/gh\s+pr\s+create/, /glab\s+mr\s+create/, /gh\s+api.*(-X|--method)\s*POST.*pulls/]
 
-const PATTERN_REASON =
-  'PR/MR creation is blocked: land work by merging directly to main (see rules/git-workflow.md)'
+const PATTERN_REASON = 'PR/MR creation is blocked here: land work by merging directly to the main branch.'
 
 export function patterns(command: string): string | null {
   return BLOCKED_PATTERNS.some(re => anyLine(command, re)) ? PATTERN_REASON : null
@@ -69,8 +68,6 @@ const SOURCE_PATH =
 
 const SOURCE_WRITE_REASON = `Editing a source file through Bash is blocked: Read it, then use Edit or Write.
 Those are tracked — Edit refuses a file you have not Read — which is the point.
-For the same mechanical change across many files, use the recast MCP tool: it
-previews a per-file plan and refuses a zero-match pattern.
 Scratch work under /tmp is unaffected.`
 
 // Drops writes in appearance only: a /tmp path climbing back out, discards, fd duplication, scratch targets.
@@ -98,13 +95,13 @@ export function sourceWrites(command: string): string | null {
 }
 
 // builds: a heavy parallel run outside the containment that keeps the desktop alive.
-// /tmp is a tmpfs, so sandboxes there are RAM; the systemd scope caps memory and collects leftover shells.
+// The systemd scope caps memory and collects leftover shells; nice keeps the desktop ahead of the build.
 
 const HEAVY = /cargo\s+mutants|cargo-mutants/
 
 const READ_ONLY_FLAGS = /--list|--list-files|--version|--help/
 
-export function builds(command: string, { cores }: Context): string | null {
+export function builds(command: string, { cores, isTmpfs }: Pick<Context, 'cores' | 'isTmpfs'>): string | null {
   if (!anyLine(command, HEAVY) || anyLine(command, READ_ONLY_FLAGS)) return null
 
   const cap = Math.max(1, Math.floor(cores / 2))
@@ -113,15 +110,19 @@ export function builds(command: string, { cores }: Context): string | null {
   cargo mutants -j${cap} --iterate --output /tmp/<dir>
   systemctl --user stop <name>.scope     # collects the shells it leaves behind`
 
+  const machine = isTmpfs ? `${cores} cores and /tmp is a tmpfs (RAM)` : `${cores} cores`
   const deny = (why: string): string =>
-    `${why} — this machine has ${cores} cores and /tmp is a tmpfs (RAM), so an uncontained sweep competes with the compositor and eats memory it never gives back. Required form:
+    `${why} — this machine has ${machine}, so an uncontained sweep competes with the desktop for CPU and memory. Required form:
 
   ${form}
 
-Every part is load-bearing and MUTATION.md records why. If you genuinely need it uncontained, say so and let the user decide — do not work around this.`
+Every part is load-bearing. If you genuinely need it uncontained, say so and let the user decide — do not work around this.`
 
-  if (!command.includes('TMPDIR=')) return deny('a mutation sweep with no TMPDIR set, so its sandboxes land in /tmp')
-  if (anyLine(command, /TMPDIR=\/tmp(\/|\s|$)/)) return deny('a mutation sweep with TMPDIR on the tmpfs')
+  // TMPDIR only matters where /tmp is RAM: the sandboxes, one per job, land there.
+  if (isTmpfs && !command.includes('TMPDIR=')) {
+    return deny('a mutation sweep with no TMPDIR set, so its sandboxes land in /tmp')
+  }
+  if (isTmpfs && anyLine(command, /TMPDIR=\/tmp(\/|\s|$)/)) return deny('a mutation sweep with TMPDIR on the tmpfs')
   if (!command.includes('systemd-run')) {
     return deny(
       'a mutation sweep outside a systemd scope, so nothing bounds its memory and nothing collects the shells it leaves running',
@@ -146,9 +147,10 @@ const RULES: { rule: RuleName; check: (command: string, context: Context) => str
   { rule: 'builds', check: builds },
 ]
 
-// Every rule that fires, so one denial names all of them instead of one per retry.
+// Every enabled rule that fires, so one denial names all of them instead of one per retry.
 export function check(command: string, context: Context): Block[] {
   return RULES.flatMap(({ rule, check }) => {
+    if (!context.enabled.has(rule)) return []
     const reason = check(command, context)
     return reason === null ? [] : [{ rule, reason }]
   })

@@ -1,7 +1,33 @@
 {
   "name": "guardrails",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Blocks risky Bash commands (wait-loops, PR creation, shell writes to source, uncontained builds) and shows every block in /blocked",
   "author": { "name": "Stoica-Mihai" },
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "blockWaitLoops": {
+      "type": "boolean",
+      "title": "Block wait-loops",
+      "description": "Deny `until … do sleep …; done` loops, and tell Claude to background the work and wait for its completion notice instead.",
+      "default": false
+    },
+    "blockPrCreation": {
+      "type": "boolean",
+      "title": "Block PR/MR creation",
+      "description": "Deny `gh pr create`, `glab mr create` and `gh api -X POST …/pulls`, for setups that merge straight to the main branch.",
+      "default": false
+    },
+    "blockShellSourceWrites": {
+      "type": "boolean",
+      "title": "Block shell writes to source files",
+      "description": "Deny writing a source file through Bash (`sed -i`, redirects, `cp`, `tee`, Python or Node file writes, `curl -o`), so edits go through Read, Edit and Write. Paths under /tmp are exempt.",
+      "default": false
+    },
+    "blockUncontainedBuilds": {
+      "type": "boolean",
+      "title": "Block uncontained mutation testing",
+      "description": "Deny `cargo mutants` unless it runs in a systemd scope with MemoryMax, under nice, with TMPDIR off /tmp, at no more than half the cores.",
+      "default": false
+    }
+  }
 }
