@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-mods",
+  "description": "Claude Code mods: function-hook plugins",
+  "owner": { "name": "Stoica-Mihai" },
+  "plugins": [
+    {
+      "name": "guardrails",
+      "description": "Blocks risky Bash commands (wait-loops, PR creation, shell writes to source, uncontained builds) and shows every block in /blocked",
+      "source": "./plugins/guardrails",
+      "category": "security"
+    }
+  ]
+}
