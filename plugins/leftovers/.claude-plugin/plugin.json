@@ -1,0 +1,22 @@
+{
+  "name": "leftovers",
+  "version": "0.1.0",
+  "description": "Tracks the processes Claude's Bash calls leave running, and has Claude close or explain them. /leftovers lists them.",
+  "author": { "name": "Stoica-Mihai" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "onLeftover": {
+      "type": "string",
+      "title": "When a turn ends with leftovers",
+      "description": "follow-up starts one more turn at once for Claude to stop them or say why they stay; note tells Claude at its next turn; off only lists them in /leftovers.",
+      "default": "note",
+      "options": ["follow-up", "note", "off"]
+    },
+    "ignore": {
+      "type": "string",
+      "title": "Never report",
+      "description": "A JavaScript regular expression; a leftover whose command line matches it is listed but never reported. Empty reports everything.",
+      "default": ""
+    }
+  }
+}

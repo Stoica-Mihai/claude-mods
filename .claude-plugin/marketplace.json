@@ -9,6 +9,12 @@
       "description": "Blocks the Bash commands your own rules file names, and shows every block in /blocked. Ships no rules.",
       "source": "./plugins/guardrails",
       "category": "security"
+    },
+    {
+      "name": "leftovers",
+      "description": "Tracks the processes Claude's Bash calls leave running, and has Claude close or explain them. /leftovers lists them.",
+      "source": "./plugins/leftovers",
+      "category": "productivity"
     }
   ]
 }
