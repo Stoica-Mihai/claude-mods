@@ -8,7 +8,7 @@ Mods are early access. The API can change between Claude Code releases, so a mod
 
 | Mod | What it does |
 | --- | --- |
-| [guardrails](plugins/guardrails) | Blocks risky Bash commands and shows every block in `/blocked` |
+| [guardrails](plugins/guardrails) | Blocks the Bash commands your own rules file names, and shows every block in `/blocked`. Ships no rules |
 
 ## Install
 

@@ -1,42 +1,89 @@
 # guardrails
 
-Blocks Bash commands that route around how this setup is meant to work, and keeps a record of every block.
+Blocks the Bash commands your rules file names, and keeps a record of every block. The mod ships no rules: until you point it at a rules file, it blocks nothing.
 
-## Rules
+## Setting it up
 
-Every rule is off until you switch it on, so installing the mod changes nothing by itself.
+1. Write a rules file, for example `~/.claude/guardrails.json`. The format is below.
+2. Point the mod at it. In Claude Code, run `/plugin configure guardrails@claude-mods`. Or from the command line:
 
-| Setting | Rule | Blocks | Instead |
-| --- | --- | --- | --- |
-| `blockWaitLoops` | `keywords` | `until` in command position: the wait-loop | Background the command and wait for the completion notice |
-| `blockPrCreation` | `patterns` | `gh pr create`, `glab mr create`, `gh api -X POST …/pulls` | Merge to the main branch directly |
-| `blockShellSourceWrites` | `source-writes` | Writing a source file through the shell: `sed -i`, redirects, `cp`, `tee`, Python or Node file writes, `curl -o` | Read the file, then use Edit or Write. `/tmp` is exempt |
-| `blockUncontainedBuilds` | `builds` | `cargo mutants` outside a systemd scope with `MemoryMax`, under `nice`, at no more than half the cores, and with `TMPDIR` off `/tmp` where `/tmp` is a tmpfs | The required form is in the denial message |
+   ```sh
+   echo '{"rulesFile": "~/.claude/guardrails.json"}' | claude plugin configure guardrails@claude-mods --values-stdin
+   ```
 
-When several rules match one command, the denial gives every reason at once.
+3. Restart Claude Code.
 
-## Turning rules on
+After that, the mod reads the file again whenever it changes, so editing a rule needs no restart.
 
-In Claude Code, run `/plugin configure guardrails@claude-mods`. Or set them from the command line:
+## The rules file
 
-```sh
-echo '{"blockWaitLoops": "true", "blockPrCreation": "true"}' | claude plugin configure guardrails@claude-mods --values-stdin
+```json
+{
+  "rules": [
+    {
+      "kind": "pattern",
+      "name": "force-push",
+      "match": "git\\s+push.*--force",
+      "unless": "--force-with-lease",
+      "reason": "Force-push is blocked. Use --force-with-lease."
+    }
+  ]
+}
 ```
 
-The command takes every value as a string, `"true"` or `"false"`. Claude Code stores them as booleans in `~/.claude/settings.json` under `pluginConfigs`. Restart Claude Code to apply a change made this way.
+Every rule has a `name`, shown in `/blocked`, and a `reason`, which Claude reads when a command is denied. Patterns are JavaScript regular expressions, written as JSON strings, so a backslash is written twice. Each pattern is matched against every line of the command separately. When several rules match one command, the denial gives every reason at once.
 
-These rules read the command text. They are a speed bump for habits, not a security boundary. A script, a glob or a variable that only becomes a path after expansion gets through.
+There are three kinds of rule.
+
+### `pattern`
+
+Blocks a command when any `match` pattern matches and no `unless` pattern does. Both take one pattern or a list.
+
+### `source-writes`
+
+Blocks writing a source file through the shell: `sed -i`, `perl -i`, redirects, `cp`, `mv`, `tee`, `dd`, `truncate`, `ln -sf`, `patch`, Python and Node file writes, and `curl -o`/`wget -O`. The denial ends with the path it found, in brackets.
+
+| Field | Meaning | Default |
+| --- | --- | --- |
+| `extensions` | File extensions that count as source | `ts`, `js`, `json`, `md`, `py`, `rs`, `go`, `sh`, `yml`, `toml`, `c`, `cpp` and others |
+| `files` | File names that count as source | `Makefile`, `Dockerfile`, `.gitignore`, `.env` and others |
+| `scratch` | Folder whose files are exempt | `/tmp/` |
+
+It reads the command's text, so it is a speed bump, not a security boundary. A script, a glob or a variable that becomes a path only after expansion gets through.
+
+### `contained`
+
+Requires a heavy command to carry every part that contains it. When `match` matches and `unless` does not, the mod checks `steps` in order. A `present` step needs its pattern somewhere in the command, and an `absent` step forbids its pattern. The first step that fails supplies `{why}`.
+
+`jobs` caps parallelism. Every `flag` match is read as a job count, and the largest must be at most `maxFraction` of this machine's cores.
+
+`reason` and each `why` can use `{why}`, `{cores}`, `{cap}` (the job cap) and `{jobs}` (the count found).
+
+```json
+{
+  "kind": "contained",
+  "name": "contained-make",
+  "match": "\\bmake\\b",
+  "steps": [{ "present": "(^|\\s)nice(\\s|$)", "why": "make is not niced" }],
+  "jobs": { "flag": "-j\\s*[0-9]+", "maxFraction": 0.5, "why": "-j{jobs} is over the cap of {cap}" },
+  "reason": "{why}. Run it as: nice make -j{cap}"
+}
+```
+
+## When the rules file is wrong
+
+If the file is missing, is not valid JSON, or has any broken rule, the mod blocks nothing. It shows a toast naming every problem, and `/blocked` shows them until the file is fixed.
 
 ## Seeing what was blocked
 
 - A toast appears each time a command is blocked.
-- `/blocked` opens a pane listing recent blocks: time, rule and command, with counts for this session, all time and each rule.
+- `/blocked` says where the rules come from, then opens a pane listing recent blocks: time, rule and command, with counts for this session, all time and each rule.
 - History is kept across sessions, up to the last 500 blocks.
 
 ## If it breaks
 
-A deny never depends on the history being written. If recording a block fails, the command is still denied. If the hook itself fails, a fallback runs the rules again and denies without recording. The test `the deny still holds when the history cannot be written` covers this.
+A deny never depends on the history being written. If recording a block fails, the command is still denied. If the hook itself fails, a fallback checks the rules again and denies without recording.
 
 ## Tests
 
-`tests/cases.ts` holds 97 commands with the verdicts the shell hooks this mod replaced gave on them. `tests/rules.test.ts` checks that each rule decides every one of them the same way: whether it fires, which file path a write names, and why a build is refused.
+`tests/scripts-rules.ts` is a rules file that reproduces four shell hooks this mod replaced. `tests/cases.ts` holds 97 commands with the verdicts those hooks gave. `tests/rules.test.ts` checks that the rules file gives the same verdict, word for word, on every one of them.

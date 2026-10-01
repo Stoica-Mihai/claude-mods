@@ -1,20 +1,23 @@
-export type GuardrailsRule = 'keywords' | 'patterns' | 'source-writes' | 'builds'
-
 export type GuardrailsBlock = {
   at: number
-  rules: GuardrailsRule[]
+  rules: string[]
   command: string
   reason: string
 }
 
-export type GuardrailsTotals = Record<GuardrailsRule, number>
+export type GuardrailsStatus = {
+  path: string
+  ruleCount: number
+  errors: string[]
+}
 
 declare module 'claude-code' {
   interface PluginState {
     guardrails: {
       session: GuardrailsBlock[]
       history: GuardrailsBlock[]
-      totals: GuardrailsTotals
+      totals: Record<string, number>
+      status: GuardrailsStatus
     }
   }
 }

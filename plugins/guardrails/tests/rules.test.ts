@@ -1,70 +1,104 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import type { GuardrailsRule } from '../types'
-import { builds, check, keywords, patterns, sourceWrites } from '../hooks/rules'
+import { check, compile } from '../hooks/rules'
 import { CASES, CORES, REASONS } from './cases'
+import { SCRIPTS_RULES } from './scripts-rules'
 
-const ALL: ReadonlySet<GuardrailsRule> = new Set(['keywords', 'patterns', 'source-writes', 'builds'])
-const MACHINE = { cores: CORES, isTmpfs: true }
-
-const RULES: Record<GuardrailsRule, (command: string) => string | null> = {
-  keywords: command => keywords(command),
-  patterns: command => patterns(command),
-  'source-writes': command => sourceWrites(command),
-  builds: command => builds(command, MACHINE),
+// The recorded verdicts are keyed by script; each script became one rule of SCRIPTS_RULES.
+const SCRIPT_OF: Record<string, string> = {
+  'wait-loops': 'keywords',
+  'pr-creation': 'patterns',
+  'source-writes': 'source-writes',
+  'contained-builds': 'builds',
 }
 
-// What a verdict decides, wording aside: fired or not, the path a write names, the reason a build failed.
-const decision = (rule: GuardrailsRule, reason: string | null | undefined): string | null => {
-  if (reason === null || reason === undefined) return null
-  if (rule === 'source-writes') return reason.match(/\(([^()]*)\)$/)![1]!
-  if (rule === 'builds') return reason.split(' — ')[0]!
-  return 'blocked'
-}
+const MACHINE = { cores: CORES }
 
-// Every rule must decide each recorded command exactly as the shell hook it replaced did.
-describe('parity with the shell hooks', () => {
-  for (const [rule, run] of Object.entries(RULES) as [GuardrailsRule, (command: string) => string | null][]) {
-    test(rule, async () => {
+describe('a rules file can reproduce the shell hooks exactly', () => {
+  const { rules, errors } = compile(SCRIPTS_RULES)
+
+  test('the file compiles', async () => {
+    expect(errors).toEqual([])
+    expect(rules.map(rule => rule.name)).toEqual(Object.keys(SCRIPT_OF))
+  })
+
+  for (const rule of rules) {
+    test(rule.name, async () => {
       for (const [command, fired] of CASES) {
-        const index = fired[rule]
-        expect({ command, decision: decision(rule, run(command)) }).toEqual({
+        const index = fired[SCRIPT_OF[rule.name]!]
+        expect({ command, reason: rule.check(command, MACHINE) }).toEqual({
           command,
-          decision: decision(rule, index === undefined ? null : REASONS[index]),
+          reason: index === undefined ? null : REASONS[index],
         })
       }
     })
   }
+
+  test('one denial names every rule that fires, in file order', async () => {
+    const blocks = check('until cargo mutants; do :; done > src/log.md', rules, MACHINE)
+    expect(blocks.map(block => block.rule)).toEqual(['wait-loops', 'source-writes', 'contained-builds'])
+  })
 })
 
-test('check names every enabled rule that fires, in rule order', async () => {
-  const blocks = check('until cargo mutants; do :; done > src/log.md', { ...MACHINE, enabled: ALL })
-  expect(blocks.map(block => block.rule)).toEqual(['keywords', 'source-writes', 'builds'])
-  expect(check('ls -la', { ...MACHINE, enabled: ALL })).toEqual([])
+describe('compiling a rules file', () => {
+  test('no rules file content means no rules', async () => {
+    expect(compile({ rules: [] })).toEqual({ rules: [], errors: [] })
+    expect(compile(null).rules).toEqual([])
+    expect(compile({}).errors).toEqual(['the file has no "rules" list'])
+  })
+
+  test('any error drops every rule and names each problem', async () => {
+    const { rules, errors } = compile({
+      rules: [
+        { kind: 'pattern', name: 'fine', match: 'rm\\s+-rf', reason: 'no' },
+        { kind: 'pattern', name: 'broken', match: '(unclosed', reason: 'no' },
+        { kind: 'teleport', name: 'odd', reason: 'no' },
+        { kind: 'pattern', match: 'x' },
+      ],
+    })
+    expect(rules).toEqual([])
+    expect(errors).toHaveLength(4)
+    expect(errors[0]).toContain('rule 2 (broken)')
+    expect(errors[1]).toBe('rule 3 (odd): "kind" must be one of pattern, source-writes, contained')
+    expect(errors.slice(2)).toEqual(['rule 4: "name" is missing', 'rule 4: "reason" is missing'])
+  })
 })
 
-test('a rule that is not enabled never fires', async () => {
-  const command = 'until cargo mutants; do gh pr create; done > src/log.md'
-  expect(check(command, { ...MACHINE, enabled: new Set() })).toEqual([])
-  expect(check(command, { ...MACHINE, enabled: new Set(['patterns']) }).map(block => block.rule)).toEqual(['patterns'])
-})
-
-test('the job cap follows the core count', async () => {
-  const contained = 'TMPDIR=~/.cache/m systemd-run --user --scope -p MemoryMax=3G nice -n 10 cargo mutants -j6'
-  expect(builds(contained, { cores: 16, isTmpfs: true })).toBeNull()
-  expect(builds(contained, { cores: 8, isTmpfs: true })).toContain('at -j6 on a 8-core machine (cap is 4)')
-})
-
-test('TMPDIR is only required where /tmp is a tmpfs', async () => {
-  const scoped = 'systemd-run --user --scope -p MemoryMax=3G nice -n 10 cargo mutants -j4'
-  expect(builds(scoped, { cores: 16, isTmpfs: true })).toContain('no TMPDIR set')
-  expect(builds(scoped, { cores: 16, isTmpfs: false })).toBeNull()
-  expect(builds('cargo mutants', { cores: 16, isTmpfs: false })).not.toContain('tmpfs')
-})
-
-test('denials name nothing from one particular setup', async () => {
-  const reasons = check('until cargo mutants; do gh pr create; done > src/log.md', { ...MACHINE, enabled: ALL })
-  for (const { reason } of reasons) {
-    expect(reason).not.toMatch(/rules\/git-workflow\.md|MUTATION\.md|recast|compositor/)
+describe('rule kinds', () => {
+  const only = (rule: object) => {
+    const compiled = compile({ rules: [rule] })
+    expect(compiled.errors).toEqual([])
+    return (command: string) => check(command, compiled.rules, { cores: 8 }).map(block => block.reason)
   }
+
+  test('pattern: any match blocks unless an exception matches', async () => {
+    const run = only({ kind: 'pattern', name: 'force', match: ['git\\s+push.*--force'], unless: '--force-with-lease', reason: 'use a lease' })
+    expect(run('git push --force origin main')).toEqual(['use a lease'])
+    expect(run('git push --force-with-lease origin main')).toEqual([])
+    expect(run('git push origin main')).toEqual([])
+  })
+
+  test('source-writes: extensions, files and the scratch folder are the user\'s', async () => {
+    const run = only({ kind: 'source-writes', name: 'w', reason: 'no', extensions: ['kt'], files: ['BUILD'], scratch: '/scratch/' })
+    expect(run('echo x > Main.kt')).toEqual(['no (Main.kt)'])
+    expect(run('echo x > BUILD')).toEqual(['no (BUILD)'])
+    expect(run('echo x > main.ts')).toEqual([])
+    expect(run('echo x > /scratch/Main.kt')).toEqual([])
+    expect(run('echo x > /tmp/Main.kt')).toEqual(['no (/tmp/Main.kt)'])
+  })
+
+  test('contained: the first missing part names the denial, and the job cap follows the cores', async () => {
+    const run = only({
+      kind: 'contained',
+      name: 'make',
+      match: '\\bmake\\b',
+      steps: [{ present: '\\bnice\\b', why: 'not niced' }],
+      jobs: { flag: '-j\\s*[0-9]+', maxFraction: 0.5, why: '-j{jobs} is over {cap}' },
+      reason: '{why} ({cores} cores)',
+    })
+    expect(run('make -j2')).toEqual(['not niced (8 cores)'])
+    expect(run('nice make -j6')).toEqual(['-j6 is over 4 (8 cores)'])
+    expect(run('nice make -j4')).toEqual([])
+    expect(run('ls')).toEqual([])
+  })
 })

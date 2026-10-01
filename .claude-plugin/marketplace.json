@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "guardrails",
-      "description": "Blocks risky Bash commands (wait-loops, PR creation, shell writes to source, uncontained builds) and shows every block in /blocked",
+      "description": "Blocks the Bash commands your own rules file names, and shows every block in /blocked. Ships no rules.",
       "source": "./plugins/guardrails",
       "category": "security"
     }
