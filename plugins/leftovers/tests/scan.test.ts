@@ -1,19 +1,25 @@
 import { expect, test } from 'claude-code/testing'
 
-import { attribute, describe, leftovers, parse, short } from '../hooks/scan'
+import { attribute, describe, leftovers, parse, short, tagValue } from '../hooks/scan'
 
 const NOW = 1_000_000_000
 const CALLS = [
-  { at: NOW - 600_000, end: NOW - 599_000, command: 'nohup sleep 900 &' },
-  { at: NOW - 60_000, end: NOW - 59_000, command: 'wezterm start -- claude' },
+  { id: 1, at: NOW - 600_000, end: NOW - 599_000, command: 'nohup sleep 900 &' },
+  { id: 2, at: NOW - 60_000, end: NOW - 59_000, command: 'wezterm start -- claude' },
 ]
 
+// Columns: pid, ppid, start ticks, attached, age in seconds, call ids from the tag, argv.
 const STDOUT = [
-  '5001\t774\t9000\t0\t590\tsleep 900',
-  '5002\t5001\t9100\t1\t30\tbash -c tail -f log',
-  '5003\t774\t9200\t0\t55\t/usr/bin/wezterm-gui start -- claude',
+  '5001\t774\t9000\t0\t590\t1\tsleep 900',
+  '5002\t5001\t9100\t1\t30\t2\tbash -c tail -f log',
+  '5003\t774\t9200\t0\t55\t2\t/usr/bin/wezterm-gui start -- claude',
   '',
 ].join('\n')
+
+test('the tag names the session and the calls in flight', async () => {
+  expect(tagValue('k', [3])).toBe('k:3')
+  expect(tagValue('k', new Set([3, 4]))).toBe('k:3,4')
+})
 
 test('parse reads each tagged process and names the Bash call that started it', async () => {
   const procs = parse(STDOUT, NOW, CALLS)
@@ -26,8 +32,20 @@ test('parse reads each tagged process and names the Bash call that started it', 
   expect(procs[0]!.startedAt).toBe(NOW - 590_000)
 })
 
-test('a process started before any recorded call has no origin', async () => {
-  expect(attribute(NOW - 700_000, CALLS)).toBeNull()
+test('the call in the tag wins over timing: a background child started after a later call began', async () => {
+  // Call 1 ran in the background; its child started only after call 2 began.
+  const calls = [
+    { id: 1, at: NOW - 5000, end: NOW - 4900, command: 'bash -c "sleep 300 & wait"' },
+    { id: 2, at: NOW - 4000, end: NOW - 3900, command: 'nohup sleep 612 &' },
+  ]
+  const [child] = parse('6001\t4000\t1\t1\t3\t1\tsleep 300\n', NOW, calls)
+  expect(child!.from).toBe('bash -c "sleep 300 & wait"')
+})
+
+test('overlapping calls are all named, and a tag with no call falls back to timing', async () => {
+  expect(attribute([1, 2], NOW, CALLS)).toBe('one of: nohup sleep 900 & | wezterm start -- claude')
+  expect(attribute([], NOW - 30_000, CALLS)).toBe('wezterm start -- claude')
+  expect(attribute([], NOW - 700_000, CALLS)).toBeNull()
 })
 
 test('only detached processes are leftovers, and the ignore pattern hides matches', async () => {
@@ -52,9 +70,9 @@ test('long command lines are cut short and processes from one call share its lin
   const flags = '--monitor-self --database=/home/u/.config/chromium/Crash Reports --annotation=channel=Arch'
   const call = 'node --check scripts/verify.mjs && .venv/bin/python scripts/page_server.py --run node scripts/verify.mjs'
   const procs = parse(
-    `7001\t774\t1\t0\t0\t/usr/lib/chromium/chrome_crashpad_handler ${flags}\n7002\t774\t2\t0\t0\t/usr/lib/chromium/chrome_crashpad_handler ${flags}\n`,
+    `7001\t774\t1\t0\t0\t1\t/usr/lib/chromium/chrome_crashpad_handler ${flags}\n7002\t774\t2\t0\t0\t1\t/usr/lib/chromium/chrome_crashpad_handler ${flags}\n`,
     NOW,
-    [{ at: NOW, end: NOW, command: call }],
+    [{ id: 1, at: NOW, end: NOW, command: call }],
   )
   const lines = describe(procs).split('\n')
   expect(lines).toHaveLength(3)

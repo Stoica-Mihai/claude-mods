@@ -1,4 +1,4 @@
-export type LeftoversCall = { at: number; end: number | null; command: string }
+export type LeftoversCall = { id: number; at: number; end: number | null; command: string }
 
 export type LeftoversProc = {
   id: string

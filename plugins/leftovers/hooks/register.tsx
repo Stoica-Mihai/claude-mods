@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { LeftoversScan } from '../types'
-import { byCall, clip, describe, leftovers, parse, SCAN_SCRIPT, short } from './scan'
+import { byCall, clip, describe, leftovers, parse, SCAN_SCRIPT, short, tagValue } from './scan'
 
 const PANE = 'leftovers'
 const CALL_LIMIT = 200
@@ -12,11 +12,11 @@ const calls = atom({ plugin: 'leftovers', key: 'calls' } as const, [])
 const reported = atom({ plugin: 'leftovers', key: 'reported' } as const, [])
 const scan = atom({ plugin: 'leftovers', key: 'scan' } as const, { at: 0, procs: [], error: null })
 
-// Bash calls in flight: the tag is set while any runs, so their children inherit it and nothing else does.
-let inFlight = 0
+// Bash calls in flight, by id: the tag names them while any runs, so their children inherit it and nothing else does.
+const inFlight = new Set<number>()
 let ignore: RegExp | null = null
 
-async function tagValue($: EngineInterface): Promise<string> {
+async function sessionKey($: EngineInterface): Promise<string> {
   const current = await read($, key)
   if (current !== '') return current
   return update($, key, value => (value === '' ? crypto.randomUUID() : value))
@@ -24,7 +24,7 @@ async function tagValue($: EngineInterface): Promise<string> {
 
 async function rescan($: EngineInterface): Promise<LeftoversScan> {
   const now = await $.clock.now()
-  const value = await tagValue($)
+  const value = await sessionKey($)
   const history = [...(await read($, calls))]
   const result = await $.process
     .run(['sh', '-c', SCAN_SCRIPT], { env: { TAG_VALUE: value }, timeoutMs: 10000 })
@@ -63,22 +63,26 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'leftovers', description: 'List the processes Bash calls left running' })
-    await tagValue($)
+    await sessionKey($)
     return next(e)
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const at = await $.clock.now()
-    await update($, calls, list => [...list, { at, end: null, command: e.command }].slice(-CALL_LIMIT))
-    inFlight += 1
-    if (inFlight === 1) await $.env.set('CLAUDE_LEFTOVERS_TAG', await tagValue($))
+    let id = 0
+    await update($, calls, list => {
+      id = (list[list.length - 1]?.id ?? 0) + 1
+      return [...list, { id, at, end: null, command: e.command }].slice(-CALL_LIMIT)
+    })
+    inFlight.add(id)
+    await $.env.set('CLAUDE_LEFTOVERS_TAG', tagValue(await sessionKey($), inFlight))
     try {
       return await next(e)
     } finally {
-      inFlight -= 1
-      if (inFlight === 0) await $.env.set('CLAUDE_LEFTOVERS_TAG', undefined)
+      inFlight.delete(id)
+      await $.env.set('CLAUDE_LEFTOVERS_TAG', inFlight.size === 0 ? undefined : tagValue(await sessionKey($), inFlight))
       const end = await $.clock.now()
-      await update($, calls, list => list.map(call => (call.at === at && call.end === null ? { ...call, end } : call)))
+      await update($, calls, list => list.map(call => (call.id === id ? { ...call, end } : call)))
     }
   })
 

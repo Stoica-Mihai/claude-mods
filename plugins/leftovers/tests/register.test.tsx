@@ -36,8 +36,8 @@ const machine = (on: On, stdout: string) => {
   return world
 }
 
-const LEFTOVER = '5001\t774\t9000\t0\t30\tsleep 900\n'
-const ATTACHED = '5002\t4000\t9100\t1\t30\ttail -f log\n'
+const LEFTOVER = '5001\t774\t9000\t0\t30\t1\tsleep 900\n'
+const ATTACHED = '5002\t4000\t9100\t1\t30\t1\ttail -f log\n'
 const TURN = { answer: 'done', durationMs: 10, isAborted: false, turnId: 't', reason: 'answer' } as never
 const SUBAGENT_TURN = { answer: 'done', durationMs: 10, isAborted: false, turnId: 't', reason: 'answer', agentId: 'a1' } as never
 
@@ -53,7 +53,7 @@ test('the tag is set only while a Bash call runs', async ($, on) => {
 
 test('follow-up: a turn ending with a leftover queues one turn naming it', { options: { onLeftover: 'follow-up' } }, async ($, on) => {
   // The mocked clock stands still, so the process is 0 seconds old: started during the call.
-  const world = machine(on, '5001\t774\t9000\t0\t0\tsleep 900\n' + ATTACHED)
+  const world = machine(on, '5001\t774\t9000\t0\t0\t1\tsleep 900\n' + ATTACHED)
   await $.tool.call({ tool: 'Bash', command: 'nohup sleep 900 &' })
 
   await $.turn.complete(TURN)
@@ -124,13 +124,13 @@ test('/leftovers lists them, and Stop kills only the leftover it names', async (
 test('the pane shows short names, and one row per background task however many processes it has', async ($, on) => {
   // One `make check` task: Claude Code's shell, two makes, the compiler and a test binary.
   const tree = [
-    '6001\t4000\t1\t1\t0\t/usr/bin/bash -c source /home/u/.claude/shell-snapshots/snapshot.sh && make check',
-    '6002\t6001\t2\t1\t0\tmake check',
-    '6003\t6002\t3\t1\t0\tmake --no-print-directory check',
-    '6004\t6003\t4\t1\t0\t/home/u/.rustup/toolchains/1.90-x86_64/bin/rustc --crate-name multi_code',
-    '6005\t6003\t5\t1\t0\t/home/u/Documents/git/multi-code/target/debug/deps/multi_code-ab12',
+    '6001\t4000\t1\t1\t0\t1\t/usr/bin/bash -c source /home/u/.claude/shell-snapshots/snapshot.sh && make check',
+    '6002\t6001\t2\t1\t0\t1\tmake check',
+    '6003\t6002\t3\t1\t0\t1\tmake --no-print-directory check',
+    '6004\t6003\t4\t1\t0\t1\t/home/u/.rustup/toolchains/1.90-x86_64/bin/rustc --crate-name multi_code',
+    '6005\t6003\t5\t1\t0\t1\t/home/u/Documents/git/multi-code/target/debug/deps/multi_code-ab12',
   ].join('\n')
-  const world = machine(on, `5001\t774\t9000\t0\t0\t/usr/lib/chromium/chrome_crashpad_handler --monitor-self\n${tree}\n`)
+  const world = machine(on, `5001\t774\t9000\t0\t0\t1\t/usr/lib/chromium/chrome_crashpad_handler --monitor-self\n${tree}\n`)
   on('ui.open', () => ({ value: { isPlaced: true } }))
   await $.tool.call({ tool: 'Bash', command: 'make check' })
   world.ran.length = 0

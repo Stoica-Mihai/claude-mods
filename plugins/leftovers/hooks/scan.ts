@@ -4,11 +4,15 @@ import type { LeftoversCall as Call, LeftoversProc as Proc } from '../types'
 
 export const TAG = 'CLAUDE_LEFTOVERS_TAG'
 
-// Prints one line per tagged process: pid, ppid, start ticks, attached (under Claude Code) 0/1, age in seconds, argv.
-// $PPID is the Claude Code process that ran this script; a process is attached while it descends from it.
+// The tag's value: the session's key, then the ids of the Bash calls in flight when the process was started.
+export const tagValue = (key: string, calls: Iterable<number>): string => `${key}:${[...calls].join(',')}`
+
+// Prints one line per tagged process: pid, ppid, start ticks, attached (under Claude Code) 0/1, age in seconds,
+// the call ids from its tag, argv. $PPID is the Claude Code process that ran this script; a process is attached
+// while it descends from it.
 export const SCAN_SCRIPT = `
 CL=$PPID
-for f in $(/usr/bin/grep -lzx "${TAG}=$TAG_VALUE" /proc/[0-9]*/environ 2>/dev/null); do
+for f in $(/usr/bin/grep -lzxE "${TAG}=$TAG_VALUE(:[0-9,]*)?" /proc/[0-9]*/environ 2>/dev/null); do
   p=\${f#/proc/}; p=\${p%/environ}
   [ "$p" = "$$" ] && continue
   stat=$(cat /proc/$p/stat 2>/dev/null) || continue
@@ -21,13 +25,17 @@ for f in $(/usr/bin/grep -lzx "${TAG}=$TAG_VALUE" /proc/[0-9]*/environ 2>/dev/nu
     set -- \${qs##*) }; q=$2
   done
   age=$(ps -o etimes= -p "$p" | tr -d ' ')
+  ids=$(tr '\\0' '\\n' < /proc/$p/environ 2>/dev/null | sed -n "s/^${TAG}=[^:]*:\\{0,1\\}//p" | head -1)
   args=$(tr '\\0' ' ' < /proc/$p/cmdline 2>/dev/null)
-  printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$p" "$ppid" "$start" "$attached" "$age" "$args"
+  printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$p" "$ppid" "$start" "$attached" "$age" "$ids" "$args"
 done
 `
 
-// The Bash call a process came from: the latest call that began before it started.
-export function attribute(startedAt: number, calls: Call[]): string | null {
+// The Bash call a process came from: the call its tag names, one of several when calls overlapped. A tag
+// naming no call (an older version's) falls back to the latest call that began before the process started.
+export function attribute(ids: number[], startedAt: number, calls: Call[]): string | null {
+  const named = ids.flatMap(id => calls.filter(call => call.id === id).map(call => call.command))
+  if (named.length > 0) return named.length === 1 ? named[0]! : `one of: ${named.join(' | ')}`
   const before = calls.filter(call => call.at <= startedAt + 1000)
   return before.length > 0 ? before[before.length - 1]!.command : null
 }
@@ -37,8 +45,9 @@ export function parse(stdout: string, now: number, calls: Call[]): Proc[] {
     .split('\n')
     .filter(line => line.trim() !== '')
     .flatMap(line => {
-      const [pid, ppid, start, attached, age, ...rest] = line.split('\t')
+      const [pid, ppid, start, attached, age, tagged = '', ...rest] = line.split('\t')
       const startedAt = now - Number(age) * 1000
+      const ids = tagged.split(',').filter(id => id !== '').map(Number)
       if (!Number.isInteger(Number(pid)) || !Number.isFinite(startedAt)) return []
       return [
         {
@@ -48,7 +57,7 @@ export function parse(stdout: string, now: number, calls: Call[]): Proc[] {
           isAttached: attached === '1',
           startedAt,
           args: rest.join('\t').trim(),
-          from: attribute(startedAt, calls),
+          from: attribute(ids, startedAt, calls),
         },
       ]
     })
