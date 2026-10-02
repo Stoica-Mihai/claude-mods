@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { LeftoversScan } from '../types'
-import { describe, leftovers, parse, SCAN_SCRIPT } from './scan'
+import { byCall, clip, describe, leftovers, parse, SCAN_SCRIPT, short } from './scan'
 
 const PANE = 'leftovers'
 const CALL_LIMIT = 200
@@ -106,11 +106,11 @@ export const register: Register = (on, options) => {
     const found = await rescan($)
     const opened = await $.ui.open({ id: PANE, title: 'Leftovers' })
     const detached = leftovers(found.procs, null).length
-    const attached = found.procs.length - detached
+    const tasks = byCall(found.procs.filter(proc => proc.isAttached)).length
     const summary =
       found.error !== null
         ? `Could not list processes: ${found.error}`
-        : `${detached} left running, ${attached} under background tasks.`
+        : `${detached} left running, ${tasks} background task${tasks === 1 ? '' : 's'}.`
     return { text: opened.isPlaced ? summary : `${summary} The pane is waiting: ${opened.reason}` }
   })
 
@@ -119,8 +119,8 @@ export const register: Register = (on, options) => {
     const found = await read($, scan)
     const detached = found.procs.filter(proc => !proc.isAttached)
     const attached = found.procs.filter(proc => proc.isAttached)
-    const width = Math.max(20, e.props.bodyColumns - 22)
-    const line = (args: string) => args.slice(0, width)
+    const tasks = byCall(attached)
+    const width = Math.max(20, e.props.bodyColumns - 18)
     const time = found.at === 0 ? 'not scanned yet' : `scanned ${new Date(found.at).toTimeString().slice(0, 8)}`
 
     return (
@@ -137,17 +137,16 @@ export const register: Register = (on, options) => {
         {detached.map(proc => (
           <Box key={proc.id}>
             <Button key={`stop-${proc.pid}`} label="Stop" onPress={() => stop($, proc.id)} />
-            <Text> {String(proc.pid).padStart(7)} </Text>
-            <Text wrap="truncate-end">{line(proc.args)}</Text>
+            <Text> {proc.pid} </Text>
+            <Text wrap="truncate-end">{clip(short(proc.args), width)}</Text>
           </Box>
         ))}
-        <Text bold>Under background tasks ({attached.length})</Text>
-        {attached.length === 0 && <Text dimColor>None.</Text>}
-        {attached.map(proc => (
-          <Box key={proc.id}>
-            <Text dimColor>       {String(proc.pid).padStart(7)} </Text>
+        <Text bold>Under background tasks ({tasks.length})</Text>
+        {tasks.length === 0 && <Text dimColor>None.</Text>}
+        {tasks.map(([from, group]) => (
+          <Box key={`task-${group[0]!.id}`}>
             <Text dimColor wrap="truncate-end">
-              {line(proc.args)}
+              {clip(from, width)} · {group.length} process{group.length === 1 ? '' : 'es'}
             </Text>
           </Box>
         ))}

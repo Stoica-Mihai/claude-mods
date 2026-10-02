@@ -105,7 +105,7 @@ test('/leftovers lists them, and Stop kills only the leftover it names', async (
   on('ui.open', () => ({ value: { isPlaced: true } }))
 
   const ran = await $.command.run({ command: 'leftovers', args: '' } as never)
-  expect(ran.text).toBe('1 left running, 1 under background tasks.')
+  expect(ran.text).toBe('1 left running, 1 background task.')
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'leftovers', surface, component: 'Pane', requestId: 'leftovers', props: PANE_PROPS })
@@ -119,4 +119,28 @@ test('/leftovers lists them, and Stop kills only the leftover it names', async (
   world.ran.length = 0
   await ui.press({ key: 'stop-5001' })
   expect(world.ran.filter(argv => argv[0] === 'kill')).toEqual([['kill', '5001']])
+})
+
+test('the pane shows short names, and one row per background task however many processes it has', async ($, on) => {
+  // One `make check` task: Claude Code's shell, two makes, the compiler and a test binary.
+  const tree = [
+    '6001\t4000\t1\t1\t0\t/usr/bin/bash -c source /home/u/.claude/shell-snapshots/snapshot.sh && make check',
+    '6002\t6001\t2\t1\t0\tmake check',
+    '6003\t6002\t3\t1\t0\tmake --no-print-directory check',
+    '6004\t6003\t4\t1\t0\t/home/u/.rustup/toolchains/1.90-x86_64/bin/rustc --crate-name multi_code',
+    '6005\t6003\t5\t1\t0\t/home/u/Documents/git/multi-code/target/debug/deps/multi_code-ab12',
+  ].join('\n')
+  const world = machine(on, `5001\t774\t9000\t0\t0\t/usr/lib/chromium/chrome_crashpad_handler --monitor-self\n${tree}\n`)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  await $.tool.call({ tool: 'Bash', command: 'make check' })
+  world.ran.length = 0
+
+  const ran = await $.command.run({ command: 'leftovers', args: '' } as never)
+  expect(ran.text).toBe('1 left running, 1 background task.')
+
+  const ui = await $.ui.mount({ plugin: 'leftovers', surface: 'terminal', component: 'Pane', requestId: 'leftovers', props: PANE_PROPS })
+  expect(await ui.find({ type: 'Text', text: 'chrome_crashpad_handler --monitor-self' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /\/usr\/lib\/chromium/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'make check · 5 processes' })).toBeDefined()
+  expect(await ui.findAll({ type: 'Text', text: /rustc|snapshot/ })).toEqual([])
 })

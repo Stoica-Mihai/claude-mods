@@ -60,7 +60,17 @@ export function leftovers(procs: Proc[], ignore: RegExp | null): Proc[] {
   return procs.filter(proc => !proc.isAttached && !(ignore?.test(proc.args) ?? false))
 }
 
-const clip = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
+export const clip = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
+
+// Processes grouped under the Bash call that started them, in the order the calls first appear.
+export function byCall(procs: Proc[]): [string, Proc[]][] {
+  const groups = new Map<string, Proc[]>()
+  for (const proc of procs) {
+    const from = proc.from ?? 'an earlier Bash call'
+    groups.set(from, [...(groups.get(from) ?? []), proc])
+  }
+  return [...groups]
+}
 
 // The program's file name and the start of its arguments: enough to recognise it, never the whole command line.
 export const short = (args: string): string => {
@@ -70,12 +80,7 @@ export const short = (args: string): string => {
 
 // One line per Bash call, listing the processes it left: pid and short name. Full command lines are in /leftovers.
 export function describe(procs: Proc[]): string {
-  const byCall = new Map<string, Proc[]>()
-  for (const proc of procs) {
-    const from = proc.from ?? 'an earlier Bash call'
-    byCall.set(from, [...(byCall.get(from) ?? []), proc])
-  }
-  const lines = [...byCall].map(
+  const lines = byCall(procs).map(
     ([from, group]) => `- ${group.map(proc => `${proc.pid} ${short(proc.args)}`).join('; ')} (from: ${clip(from, 80)})`,
   )
   return [
