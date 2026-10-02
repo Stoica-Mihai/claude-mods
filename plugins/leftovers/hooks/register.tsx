@@ -94,7 +94,7 @@ export const register: Register = (on, options) => {
     if (fresh.length === 0) return result
 
     await update($, reported, list => [...list, ...fresh.map(proc => proc.id)])
-    const text = describe(fresh, found.at)
+    const text = describe(fresh)
     $.ui.toast(`leftovers: ${fresh.length} process${fresh.length === 1 ? '' : 'es'} still running — /leftovers`)
 
     if (mode === 'follow-up') void $.prompt.submit({ text }).catch(() => null)

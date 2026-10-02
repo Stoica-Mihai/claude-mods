@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { attribute, describe, leftovers, parse } from '../hooks/scan'
+import { attribute, describe, leftovers, parse, short } from '../hooks/scan'
 
 const NOW = 1_000_000_000
 const CALLS = [
@@ -36,9 +36,31 @@ test('only detached processes are leftovers, and the ignore pattern hides matche
   expect(leftovers(procs, /wezterm/).map(proc => proc.pid)).toEqual([5001])
 })
 
-test('the note names each leftover by pid with its command and origin', async () => {
-  const text = describe(leftovers(parse(STDOUT, NOW, CALLS), null), NOW)
-  expect(text).toContain('- pid 5001, running 9m: sleep 900\n  started by: nohup sleep 900 &')
-  expect(text).toContain('- pid 5003, running under a minute: /usr/bin/wezterm-gui start -- claude')
-  expect(text).toContain('Stop each one that is no longer needed by its pid')
+test('the note gives each leftover a pid and short name, one line per Bash call', async () => {
+  const text = describe(leftovers(parse(STDOUT, NOW, CALLS), null))
+  expect(text).toBe(
+    [
+      "Still running, detached, from this session's Bash calls:",
+      '- 5001 sleep 900 (from: nohup sleep 900 &)',
+      '- 5003 wezterm-gui start -- claude (from: wezterm start -- claude)',
+      'Stop the ones no longer needed by pid, or tell the user why they stay. /leftovers lists them.',
+    ].join('\n'),
+  )
+})
+
+test('long command lines are cut short and processes from one call share its line', async () => {
+  const flags = '--monitor-self --database=/home/u/.config/chromium/Crash Reports --annotation=channel=Arch'
+  const call = 'node --check scripts/verify.mjs && .venv/bin/python scripts/page_server.py --run node scripts/verify.mjs'
+  const procs = parse(
+    `7001\t774\t1\t0\t0\t/usr/lib/chromium/chrome_crashpad_handler ${flags}\n7002\t774\t2\t0\t0\t/usr/lib/chromium/chrome_crashpad_handler ${flags}\n`,
+    NOW,
+    [{ at: NOW, end: NOW, command: call }],
+  )
+  const lines = describe(procs).split('\n')
+  expect(lines).toHaveLength(3)
+  expect(lines[1]).toBe(
+    `- 7001 ${short(procs[0]!.args)}; 7002 ${short(procs[1]!.args)} (from: ${call.slice(0, 79)}…)`,
+  )
+  expect(short(procs[0]!.args)).toBe('chrome_crashpad_handler --monitor-self --database=/home/u/.…')
+  expect(short(procs[0]!.args)).toHaveLength(60)
 })

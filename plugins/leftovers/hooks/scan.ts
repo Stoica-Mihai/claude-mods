@@ -60,20 +60,27 @@ export function leftovers(procs: Proc[], ignore: RegExp | null): Proc[] {
   return procs.filter(proc => !proc.isAttached && !(ignore?.test(proc.args) ?? false))
 }
 
-const age = (ms: number): string => {
-  const minutes = Math.floor(ms / 60000)
-  return minutes < 1 ? 'under a minute' : minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h${minutes % 60}m`
+const clip = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
+
+// The program's file name and the start of its arguments: enough to recognise it, never the whole command line.
+export const short = (args: string): string => {
+  const [program = '', ...rest] = args.split(' ')
+  return clip([program.split('/').pop(), ...rest].join(' '), 60)
 }
 
-export function describe(procs: Proc[], now: number): string {
-  const lines = procs.map(
-    proc =>
-      `- pid ${proc.pid}, running ${age(now - proc.startedAt)}: ${proc.args}` +
-      (proc.from === null ? '' : `\n  started by: ${proc.from}`),
+// One line per Bash call, listing the processes it left: pid and short name. Full command lines are in /leftovers.
+export function describe(procs: Proc[]): string {
+  const byCall = new Map<string, Proc[]>()
+  for (const proc of procs) {
+    const from = proc.from ?? 'an earlier Bash call'
+    byCall.set(from, [...(byCall.get(from) ?? []), proc])
+  }
+  const lines = [...byCall].map(
+    ([from, group]) => `- ${group.map(proc => `${proc.pid} ${short(proc.args)}`).join('; ')} (from: ${clip(from, 80)})`,
   )
   return [
-    'These processes were started by Bash calls in this session and are still running, detached from Claude Code:',
+    'Still running, detached, from this session\'s Bash calls:',
     ...lines,
-    'Stop each one that is no longer needed by its pid, or tell the user which you are leaving running and why. /leftovers lists them.',
+    'Stop the ones no longer needed by pid, or tell the user why they stay. /leftovers lists them.',
   ].join('\n')
 }

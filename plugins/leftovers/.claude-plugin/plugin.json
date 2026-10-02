@@ -1,6 +1,6 @@
 {
   "name": "leftovers",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Tracks the processes Claude's Bash calls leave running, and has Claude close or explain them. /leftovers lists them.",
   "author": { "name": "Stoica-Mihai" },
   "types": "./types/index.d.ts",

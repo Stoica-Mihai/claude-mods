@@ -60,8 +60,7 @@ test('follow-up: a turn ending with a leftover queues one turn naming it', { opt
   await $.turn.complete(TURN)
 
   expect(world.prompts).toHaveLength(1)
-  expect(world.prompts[0]).toContain('- pid 5001')
-  expect(world.prompts[0]).toContain('started by: nohup sleep 900 &')
+  expect(world.prompts[0]).toContain('- 5001 sleep 900 (from: nohup sleep 900 &)')
   expect(world.prompts[0]).not.toContain('5002')
 })
 
