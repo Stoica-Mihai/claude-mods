@@ -43,11 +43,13 @@ Blocks a command when any `match` pattern matches and no `unless` pattern does. 
 
 Blocks writing a source file through the shell: `sed -i`, `perl -i`, redirects, `cp`, `mv`, `tee`, `dd`, `truncate`, `ln -sf`, `patch`, Python and Node file writes, and `curl -o`/`wget -O`. The denial ends with the path it found, in brackets.
 
+Only the file being written counts. Each command in a line (split at `;`, `&&`, `||`, `|`, `&`) is checked on its own. A redirect counts only its target, and `cp`, `mv`, `install` and `rsync` count only their destination. So `grep x src/a.rs; make > build.log` is allowed, and a URL is never taken for a file.
+
 | Field | Meaning | Default |
 | --- | --- | --- |
 | `extensions` | File extensions that count as source | `ts`, `js`, `json`, `md`, `py`, `rs`, `go`, `sh`, `yml`, `toml`, `c`, `cpp` and others |
 | `files` | File names that count as source | `Makefile`, `Dockerfile`, `.gitignore`, `.env` and others |
-| `scratch` | Folder whose files are exempt | `/tmp/` |
+| `scratch` | Folder, or list of folders, whose files are exempt. Written as the command writes it: list `~/.cache/work/` and `/home/you/.cache/work/` separately if you use both | `/tmp/` |
 
 It reads the command's text, so it is a speed bump, not a security boundary. A script, a glob or a variable that becomes a path only after expansion gets through.
 

@@ -11,7 +11,7 @@ export type SourceWritesRule = {
   reason: string
   extensions?: string[]
   files?: string[]
-  scratch?: string
+  scratch?: Patterns
 }
 
 export type ContainedStep = { present: string; why: string } | { absent: string; why: string }
@@ -42,8 +42,6 @@ const anyLine = (text: string, re: RegExp): boolean => lines(text).some(line => 
 
 const allMatches = (text: string, re: RegExp): string[] =>
   lines(text).flatMap(line => [...line.matchAll(new RegExp(re.source, 'g'))].map(m => m[0]))
-
-const perLine = (text: string, edit: (line: string) => string): string => lines(text).map(edit).join('\n')
 
 const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')
 
@@ -90,36 +88,90 @@ const WRITE_MECHANISMS = [
   /ln\s+[^|;]*-s[a-z]*f/,
 ]
 
-// Matched against the command with quoted spans removed: the shell cannot redirect from inside quotes.
-const REDIRECT = /[>]>?\s*[^&\s]/
+// Copies whose last argument is the only file they write.
+const COPY = /^(cp|mv|install|rsync)\s/
 
-// Each quoted span becomes one placeholder, so a quoted redirect target still leaves something to match.
-const unquote = (line: string): string => line.replace(/'[^']*'/g, 'Q').replace(/"[^"]*"/g, 'Q')
+// Splits a line into its commands at unquoted ; | & (an & that is part of a redirect stays), so each write is
+// matched only against its own command's paths.
+export function segments(line: string): string[] {
+  const parts: string[] = []
+  let quote: string | null = null
+  let current = ''
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]!
+    if (quote !== null) {
+      if (c === quote) quote = null
+    } else if (c === "'" || c === '"') {
+      quote = c
+    } else if ((c === ';' || c === '|' || c === '&') && line[i - 1] !== '>' && line[i + 1] !== '>') {
+      parts.push(current)
+      current = ''
+      continue
+    }
+    current += c
+  }
+  parts.push(current)
+  return parts.map(part => part.trim()).filter(part => part !== '')
+}
+
+// The files a command's unquoted > and >> redirects write, quotes removed; fd duplication (2>&1) is skipped.
+export function redirectTargets(segment: string): string[] {
+  const targets: string[] = []
+  let quote: string | null = null
+  for (let i = 0; i < segment.length; i++) {
+    const c = segment[i]!
+    if (quote !== null) {
+      if (c === quote) quote = null
+      continue
+    }
+    if (c === "'" || c === '"') {
+      quote = c
+      continue
+    }
+    if (c !== '>') continue
+    let j = i + 1
+    if (segment[j] === '>') j++
+    if (segment[j] === '&') continue
+    while (segment[j] === ' ' || segment[j] === '\t') j++
+    let target = ''
+    const open = segment[j] === '"' || segment[j] === "'" ? segment[j++] : null
+    while (j < segment.length && (open !== null ? segment[j] !== open : !/[\s;&|)<>]/.test(segment[j]!))) target += segment[j++]
+    if (target !== '') targets.push(target)
+    i = j
+  }
+  return targets
+}
 
 function sourceWrites(rule: SourceWritesRule): Compiled['check'] {
   const extensions = (rule.extensions ?? DEFAULT_EXTENSIONS).map(escape).join('|')
   const files = (rule.files ?? DEFAULT_FILES).map(escape).join('|')
-  const sourcePath = new RegExp(`([A-Za-z0-9_./~-]+\\.(${extensions})|[A-Za-z0-9_./~-]*(${files}))\\b`)
-  const scratch = rule.scratch ?? '/tmp/'
-  const s = escape(scratch)
+  const sourcePath = new RegExp(`([A-Za-z0-9_./~$-]+\\.(${extensions})|[A-Za-z0-9_./~$-]*(${files}))\\b`)
+  const scratch = list(rule.scratch ?? '/tmp/')
 
-  // Drops writes in appearance only: a scratch path climbing back out, discards, fd duplication, scratch targets.
-  const neutralise = (line: string): string =>
-    line
-      .replace(new RegExp(`${s}\\.\\.`, 'g'), '/climbs-out/..')
-      .replace(/[0-9]*>>?\s*\/dev\/[a-z]+/g, '')
-      .replace(/[0-9]*>&[0-9-]+/g, '')
-      .replace(new RegExp(`[0-9]*>>?\\s*"?'?${s}[^ "'|;&)]*`, 'g'), '')
-      .replace(new RegExp(`(^|[;&|]\\s*)(cp|mv|install|rsync)\\s+[^;|&]*\\s${s}[^ ;|&]*\\s*($|[;|&])`, 'g'), '$1')
+  // Scratch only when the path begins with a scratch prefix and never climbs out; $HOME and $PWD are not scratch.
+  const isScratch = (path: string): boolean => scratch.some(prefix => path.startsWith(prefix)) && !path.includes('..')
+  const sourceIn = (text: string): string[] =>
+    allMatches(text, sourcePath).filter(path => !isScratch(path) && !path.startsWith('/dev/'))
+
+  const check = (segment: string): string | null => {
+    // A URL is never a file being written.
+    const text = segment.replace(/\S+:\/\/\S+/g, ' ')
+    const redirected = redirectTargets(text).flatMap(sourceIn)
+    if (redirected.length > 0) return redirected[0]!
+    if (!WRITE_MECHANISMS.some(re => re.test(text))) return null
+    if (COPY.test(text)) return sourceIn(text.split(/\s+/).pop() ?? '')[0] ?? null
+    return sourceIn(text)[0] ?? null
+  }
 
   return command => {
-    const scan = perLine(command, neutralise)
-    const writes = anyLine(perLine(scan, unquote), REDIRECT) || WRITE_MECHANISMS.some(re => anyLine(scan, re))
-    if (!writes) return null
-
-    // Scratch only when the path begins with the scratch prefix and never climbs out; $HOME and $PWD are not scratch.
-    const target = allMatches(scan, sourcePath).find(path => !(path.startsWith(scratch) && !path.includes('..')))
-    return target === undefined ? null : `${rule.reason} (${target})`
+    // A trailing backslash continues the command on the next line.
+    for (const line of lines(command.replace(/\\\n/g, ' '))) {
+      for (const segment of segments(line)) {
+        const target = check(segment)
+        if (target !== null) return `${rule.reason} (${target})`
+      }
+    }
+    return null
   }
 }
 

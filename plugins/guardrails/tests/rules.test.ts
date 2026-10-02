@@ -14,6 +14,28 @@ const SCRIPT_OF: Record<string, string> = {
 
 const MACHINE = { cores: CORES }
 
+// A verdict reduced to what it decides: allowed, or the path a denial names.
+const verdict = (reason: string | null): string =>
+  reason === null ? 'allowed' : (reason.match(/\(([^()]*)\)$/)?.[1] ?? 'denied')
+
+// Where the engine now decides differently from the shell hooks, on purpose. Every other verdict must match.
+const INTENDED: Record<string, { command: string; was: string; now: string }[]> = {
+  'source-writes': [
+    // The real path, not the hook's internal rewrite of it.
+    { command: "sed -i 's/a/b/' /tmp/../home/x.ts", was: '/climbs-out/../home/x.ts', now: '/tmp/../home/x.ts' },
+    // A URL is not a file; the download goes to /tmp.
+    { command: 'curl -sL https://claudemods.ai/api/mods.json -o /tmp/cmods/mods.json', was: '//claudemods.ai/api/mods.json', now: 'allowed' },
+    // A copy writes its destination, not its source.
+    { command: 'cp a.ts b.ts', was: 'a.ts', now: 'b.ts' },
+    { command: 'mv old.rs new.rs', was: 'old.rs', now: 'new.rs' },
+    { command: 'echo x > /tmp/../etc/a.md', was: '/climbs-out/../etc/a.md', now: '/tmp/../etc/a.md' },
+    { command: 'echo x > $HOME/a.py', was: 'HOME/a.py', now: '$HOME/a.py' },
+    // A redirect writes its target, not the file the command reads.
+    { command: 'jq . a.json > b.json', was: 'a.json', now: 'b.json' },
+    { command: 'echo done > /dev/null && cp x.md y.md', was: 'x.md', now: 'y.md' },
+  ],
+}
+
 describe('a rules file can reproduce the shell hooks exactly', () => {
   const { rules, errors } = compile(SCRIPTS_RULES)
 
@@ -24,13 +46,13 @@ describe('a rules file can reproduce the shell hooks exactly', () => {
 
   for (const rule of rules) {
     test(rule.name, async () => {
-      for (const [command, fired] of CASES) {
+      const differences = CASES.flatMap(([command, fired]) => {
         const index = fired[SCRIPT_OF[rule.name]!]
-        expect({ command, reason: rule.check(command, MACHINE) }).toEqual({
-          command,
-          reason: index === undefined ? null : REASONS[index],
-        })
-      }
+        const was = index === undefined ? null : REASONS[index]!
+        const now = rule.check(command, MACHINE)
+        return now === was ? [] : [{ command, was: verdict(was), now: verdict(now) }]
+      })
+      expect(differences).toEqual(INTENDED[rule.name] ?? [])
     })
   }
 
@@ -85,6 +107,18 @@ describe('rule kinds', () => {
     expect(run('echo x > main.ts')).toEqual([])
     expect(run('echo x > /scratch/Main.kt')).toEqual([])
     expect(run('echo x > /tmp/Main.kt')).toEqual(['no (/tmp/Main.kt)'])
+  })
+
+  test('source-writes: only the file a command writes counts, not every file it names', async () => {
+    const run = only({ kind: 'source-writes', name: 'w', reason: 'no', scratch: ['/tmp/', '~/.cache/work/'] })
+    expect(run('grep -n serde crates/ui/Cargo.toml; cargo build > ~/.cache/work/ui2.log 2>&1')).toEqual([])
+    expect(run('cargo build > ~/.cache/work/b.log 2>&1; grep -n Fake crates/ui/src/lib.rs')).toEqual([])
+    expect(run('curl -s https://openrouter.ai/api/v1/models > ~/.cache/work/models.json')).toEqual([])
+    expect(run('curl -s https://openrouter.ai/api/v1/models > models.json')).toEqual(['no (models.json)'])
+    expect(run('grep x a.rs; echo y > src/b.rs')).toEqual(['no (src/b.rs)'])
+    expect(run('cat a.ts | sed -i s/x/y/ b.ts')).toEqual(['no (b.ts)'])
+    expect(run('cp src/a.ts /tmp/backup.ts')).toEqual([])
+    expect(run('cp /tmp/a.ts src/a.ts')).toEqual(['no (src/a.ts)'])
   })
 
   test('contained: the first missing part names the denial, and the job cap follows the cores', async () => {

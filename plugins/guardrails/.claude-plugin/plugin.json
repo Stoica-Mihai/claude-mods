@@ -1,6 +1,6 @@
 {
   "name": "guardrails",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Blocks the Bash commands your own rules file names, and shows every block in /blocked. Ships no rules.",
   "author": { "name": "Stoica-Mihai" },
   "types": "./types/index.d.ts",
